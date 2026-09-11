@@ -18,29 +18,7 @@ A lightweight, bare-metal avionics Electronic Flight Bag (EFB) appliance designe
 * 480x480 Hardware Display Screen
 * Stratux ADS-B Receiver
 * MicroSD Card (Configured for OverlayFS / Read-Only to prevent corruption upon master switch power loss)
-* Note: Snapshot v1.0 requires the usa_nav.db which is too large for github
-* The `usa_nav.db` file contains the complete U.S. airspace, waypoint, and airport database. Because this file exceeds GitHub's 100MB size limit and updates on the FAA's 28-day AIRAC cycle, you must generate it locally before deploying the EFB.
-
-### 1. Download the FAA NASR Data
-1. Navigate to the [FAA Aeronautical Information Services (AIS)](https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/) portal.
-2. Download the latest **28-Day NASR Subscription** zip file for the current cycle.
-3. Extract the contents (specifically the `APT.txt`, `FIX.txt`, `NAV.txt`, and `AWY.txt` files) into a folder named `faa_data` in the root of this repository.
-
-### 2. Build the SQLite Database
-Run the included Python parser script to ingest the raw FAA text files, structure the relational tables, and generate the localized SQLite database.
-```bash
-# Run the database generation script
-python3 build_nav_db.py --input ./faa_data --output usa_nav.db
-
-## 🚀 Installation & Deployment
-
-This application is designed to be deployed as a dedicated appliance on **Raspberry Pi OS Lite (64-bit)**. 
-
-### 1. Base OS Configuration
-Flash Raspberry Pi OS Lite onto your MicroSD card. Ensure SSH is enabled and the user is set up. Once booted, install the required headless display and runtime dependencies:
-```bash
-sudo apt update && sudo apt install -y default-jre openjfx python3 python3-pil xserver-xorg x11-xserver-utils xinit openbox
-```
+* Note: Snapshot v1.0 requires the usa_nav.db
 
 ### 2. Hardware Memory Allocation
 To ensure smooth vector rendering of complex airspace, allocate dedicated VRAM to the GPU.
