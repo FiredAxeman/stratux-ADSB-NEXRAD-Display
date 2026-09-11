@@ -33,8 +33,51 @@ public class NavDatabaseManager {
                     "lat REAL, " +
                     "lon REAL);");
 
+            stmt.execute("CREATE TABLE IF NOT EXISTS water_features (" +
+                    "id TEXT PRIMARY KEY, " +
+                    "name TEXT);");
+
+            stmt.execute("CREATE TABLE IF NOT EXISTS water_vertices (" +
+                    "water_id TEXT, " +
+                    "seq INTEGER, " +
+                    "lat REAL, " +
+                    "lon REAL);");
+
+            stmt.execute("CREATE TABLE IF NOT EXISTS roads (" +
+                    "id INTEGER PRIMARY KEY, " +
+                    "name TEXT, " +
+                    "type TEXT);");
+
+            stmt.execute("CREATE TABLE IF NOT EXISTS road_vertices (" +
+                    "road_id INTEGER, " +
+                    "seq INTEGER, " +
+                    "lat REAL, " +
+                    "lon REAL);");
+
+            addColumnIfMissing(conn, "roads", "type", "TEXT");
+            stmt.execute("CREATE TABLE IF NOT EXISTS state_borders (" +
+                    "id TEXT PRIMARY KEY, " +
+                    "name TEXT);");
+            stmt.execute("CREATE TABLE IF NOT EXISTS state_border_vertices (" +
+                    "state_id TEXT, " +
+                    "seq INTEGER, " +
+                    "lat REAL, " +
+                    "lon REAL);");
+
         } catch (Exception e) {
             System.err.println("Database initialization failed: " + e.getMessage());
+        }
+    }
+
+    private void addColumnIfMissing(Connection conn, String table, String column,
+                                    String definition) throws java.sql.SQLException {
+        try (java.sql.ResultSet rs = conn.getMetaData().getColumns(null, null, table, column)) {
+            if (!rs.next()) {
+                try (java.sql.Statement stmt = conn.createStatement()) {
+                    stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column
+                            + " " + definition);
+                }
+            }
         }
     }
 
@@ -104,6 +147,63 @@ public class NavDatabaseManager {
         }
         return airspaces;
     }
+
+    public List<GroundFeature> getNearbyRoads(double minLat, double maxLat,
+                                              double minLon, double maxLon) {
+        return getNearbyGroundFeatures(
+                "SELECT r.id, r.name, r.type, v.lat, v.lon, v.seq " +
+                        "FROM roads r JOIN road_vertices v ON r.id = v.road_id " +
+                        "WHERE r.id IN (SELECT road_id FROM road_vertices " +
+                        "WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?) " +
+                        "ORDER BY r.id, v.seq",
+                minLat, maxLat, minLon, maxLon);
+    }
+
+    public List<GroundFeature> getNearbyWater(double minLat, double maxLat,
+                                              double minLon, double maxLon) {
+        return getNearbyGroundFeatures(
+                "SELECT w.id, w.name, 'water', v.lat, v.lon, v.seq " +
+                        "FROM water_features w JOIN water_vertices v ON w.id = v.water_id " +
+                        "WHERE w.id IN (SELECT water_id FROM water_vertices " +
+                        "WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?) " +
+                        "ORDER BY w.id, v.seq",
+                minLat, maxLat, minLon, maxLon);
+    }
+
+    private List<GroundFeature> getNearbyGroundFeatures(String query,
+                                                         double minLat, double maxLat,
+                                                         double minLon, double maxLon) {
+        List<GroundFeature> features = new ArrayList<>();
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setDouble(1, minLat);
+            pstmt.setDouble(2, maxLat);
+            pstmt.setDouble(3, minLon);
+            pstmt.setDouble(4, maxLon);
+
+            ResultSet rs = pstmt.executeQuery();
+            String currentId = "";
+            GroundFeature currentFeature = null;
+            while (rs.next()) {
+                String id = rs.getString("id");
+                if (!id.equals(currentId)) {
+                    currentId = id;
+                    currentFeature = new GroundFeature();
+                    currentFeature.id = id;
+                    currentFeature.name = rs.getString("name");
+                    currentFeature.type = rs.getString("type");
+                    features.add(currentFeature);
+                }
+                currentFeature.vertices.add(new double[]{
+                        rs.getDouble("lat"), rs.getDouble("lon")
+                });
+            }
+        } catch (Exception e) {
+            System.err.println("Ground feature query failed: " + e.getMessage());
+        }
+        return features;
+    }
+
     public List<ElevationCell> getNearbyTerrain(double minLat, double maxLat, double minLon, double maxLon) {
         List<ElevationCell> cells = new ArrayList<>();
         String query = "SELECT lat, lon, elev_ft FROM terrain_grid WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?";
