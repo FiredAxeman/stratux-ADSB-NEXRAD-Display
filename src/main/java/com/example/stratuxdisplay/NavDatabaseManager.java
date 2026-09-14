@@ -53,6 +53,10 @@ public class NavDatabaseManager {
                     "seq INTEGER, " +
                     "lat REAL, " +
                     "lon REAL);");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_airspace_vertices_location " +
+                    "ON airspace_vertices(lat, lon);");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_water_vertices_location " +
+                    "ON water_vertices(lat, lon);");
 
             addColumnIfMissing(conn, "roads", "type", "TEXT");
             stmt.execute("CREATE TABLE IF NOT EXISTS state_borders (" +
@@ -115,6 +119,7 @@ public class NavDatabaseManager {
         String query = "SELECT DISTINCT a.id, a.class_type, v.lat, v.lon, v.seq " +
                 "FROM airspaces a JOIN airspace_vertices v ON a.id = v.airspace_id " +
                 "WHERE a.id IN (SELECT airspace_id FROM airspace_vertices WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?) " +
+                "AND v.lat BETWEEN ? AND ? AND v.lon BETWEEN ? AND ? " +
                 "ORDER BY a.id, v.seq";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
@@ -124,6 +129,10 @@ public class NavDatabaseManager {
             pstmt.setDouble(2, maxLat);
             pstmt.setDouble(3, minLon);
             pstmt.setDouble(4, maxLon);
+            pstmt.setDouble(5, minLat);
+            pstmt.setDouble(6, maxLat);
+            pstmt.setDouble(7, minLon);
+            pstmt.setDouble(8, maxLon);
 
             ResultSet rs = pstmt.executeQuery();
             String currentId = "";
@@ -162,10 +171,9 @@ public class NavDatabaseManager {
     public List<GroundFeature> getNearbyWater(double minLat, double maxLat,
                                               double minLon, double maxLon) {
         return getNearbyGroundFeatures(
-                "SELECT w.id, w.name, 'water', v.lat, v.lon, v.seq " +
+                "SELECT w.id, w.name, 'water' AS type, v.lat, v.lon, v.seq " +
                         "FROM water_features w JOIN water_vertices v ON w.id = v.water_id " +
-                        "WHERE w.id IN (SELECT water_id FROM water_vertices " +
-                        "WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?) " +
+                        "WHERE v.lat BETWEEN ? AND ? AND v.lon BETWEEN ? AND ? " +
                         "ORDER BY w.id, v.seq",
                 minLat, maxLat, minLon, maxLon);
     }

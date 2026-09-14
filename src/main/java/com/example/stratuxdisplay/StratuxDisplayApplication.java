@@ -13,7 +13,6 @@ import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
@@ -21,7 +20,6 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.input.KeyCode;
-import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
@@ -73,7 +71,6 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
     private final NavDatabaseManager dbManager = new NavDatabaseManager();
     private volatile List<NavigationWaypoint> activeAirports = new ArrayList<>();
     private volatile List<AirspacePolygon> activeAirspaces = new ArrayList<>();
-    private volatile List<GroundFeature> activeRoads = new ArrayList<>();
     private volatile List<GroundFeature> activeWater = new ArrayList<>();
     private final List<StateBorder> stateBorders = new ArrayList<>();
     private volatile double lastFeatureQueryLat = Double.NaN;
@@ -104,6 +101,7 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
     private static final long TRAFFIC_DATA_TIMEOUT_MS = 15 * 1000;
     private static final double STATE_BORDER_RADIUS_NM = 100.0 / 1.15078;
     private static final int ENCODER_COMMAND_PORT = 4010;
+    private static final long MIN_RENDER_INTERVAL_NANOS = 50_000_000L;
 
     // FIS-B Bounding Box Anchors
     private volatile double nexradNorth = 0.0;
@@ -128,14 +126,11 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
 
         // Lock to the exact Raspberry Pi LCD resolution
         canvas = new Canvas(DISPLAY_SIZE, DISPLAY_SIZE);
-        HBox controlBar = createTouchControlBar();
 
         StackPane root = new StackPane();
         root.setStyle("-fx-background-color: #000000;");
 
-        root.getChildren().addAll(canvas, controlBar);
-        StackPane.setAlignment(controlBar, Pos.TOP_RIGHT);
-        StackPane.setMargin(controlBar, new Insets(4, 4, 0, 0));
+        root.getChildren().add(canvas);
 
         bootRoot = root;
         bootOverlay = createBootScreen(root);
@@ -182,8 +177,14 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
         root.requestFocus();
 
         AnimationTimer renderLoop = new AnimationTimer() {
+            private long lastRenderNanos;
+
             @Override
             public void handle(long now) {
+                if (now - lastRenderNanos < MIN_RENDER_INTERVAL_NANOS) {
+                    return;
+                }
+                lastRenderNanos = now;
                 renderRadar();
             }
         };
@@ -316,28 +317,6 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
                 && currentNexradImage != null
                 && lastNexradTimeMs > 0
                 && (System.currentTimeMillis() - lastNexradTimeMs) <= NEXRAD_DATA_TIMEOUT_MS;
-    }
-
-    private HBox createTouchControlBar() {
-        HBox box = new HBox(4);
-        box.setAlignment(Pos.TOP_LEFT);
-
-        Button btnZoomIn = createStyledButton("+");
-        Button btnZoomOut = createStyledButton("-");
-        String compactStyle = "-fx-background-color: #172b3a; -fx-text-fill: #d8f4ff; "
-                + "-fx-border-color: #4a8da8; -fx-border-width: 1; "
-                + "-fx-font-weight: bold; -fx-font-size: 10px; -fx-padding: 1 4;";
-        btnZoomIn.setStyle(compactStyle);
-        btnZoomOut.setStyle(compactStyle);
-
-        btnZoomIn.setOnAction(e -> changeRange(1));
-        btnZoomOut.setOnAction(e -> changeRange(-1));
-
-        box.getChildren().addAll(btnZoomIn, btnZoomOut);
-        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-        box.setVisible(windows);
-        box.setManaged(windows);
-        return box;
     }
 
     private void startEncoderListener() {
@@ -1121,10 +1100,6 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
                                                     currentLatitude - delta, currentLatitude + delta,
                                                     currentLongitude - delta, currentLongitude + delta
                                             );
-                                            activeRoads = dbManager.getNearbyRoads(
-                                                    currentLatitude - delta, currentLatitude + delta,
-                                                    currentLongitude - delta, currentLongitude + delta
-                                            );
                                             activeWater = dbManager.getNearbyWater(
                                                     currentLatitude - delta, currentLatitude + delta,
                                                     currentLongitude - delta, currentLongitude + delta
@@ -1132,8 +1107,8 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
                                             lastFeatureQueryLat = currentLatitude;
                                             lastFeatureQueryLon = currentLongitude;
                                             lastFeatureQueryMs = System.currentTimeMillis();
-                                            System.out.println("Ground features loaded: roads="
-                                                    + activeRoads.size() + ", water=" + activeWater.size());
+                                            System.out.println("Ground features loaded: water="
+                                                    + activeWater.size());
                                         }
 
                                     }
@@ -1145,7 +1120,7 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
                     System.err.println("Situation poll failed: " + e.getMessage());
                 }
             }
-        }, 0, 500);
+        }, 0, 1000);
     }
 
     private boolean shouldRefreshFeatureData(double latitude, double longitude) {
