@@ -20,6 +20,7 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.input.KeyCode;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
@@ -30,6 +31,9 @@ import javafx.stage.Stage;
 import javafx.util.Duration;
 
 import java.net.URI;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.SocketException;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.util.ArrayList;
@@ -39,8 +43,15 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 
 public class StratuxDisplayApplication extends Application implements WebSocket.Listener {
+
+    private static final int DISPLAY_SIZE = 480;
+    private static final String DEFAULT_STRATUX_HOST = "192.168.10.1";
+    private static final String STRATUX_HOST = System.getProperty(
+            "stratux.host",
+            System.getenv().getOrDefault("STRATUX_HOST", DEFAULT_STRATUX_HOST));
 
     private WebSocket stratuxWebSocket;
     private final Gson gson = new Gson();
@@ -82,10 +93,17 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
     private volatile boolean shuttingDown = false;
     private volatile long lastLoadedNexradFileTime = 0;
     private volatile boolean nexradDataValid = false;
+    private DatagramSocket encoderSocket;
+    private Thread encoderListenerThread;
+    private StackPane bootRoot;
+    private VBox bootOverlay;
+    private Timeline bootStartupTimer;
+    private volatile boolean bootScreenVisible;
 
     private static final long NEXRAD_DATA_TIMEOUT_MS = 15 * 60 * 1000;
     private static final long TRAFFIC_DATA_TIMEOUT_MS = 15 * 1000;
     private static final double STATE_BORDER_RADIUS_NM = 100.0 / 1.15078;
+    private static final int ENCODER_COMMAND_PORT = 4010;
 
     // FIS-B Bounding Box Anchors
     private volatile double nexradNorth = 0.0;
@@ -109,7 +127,7 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
         loadStateBorders();
 
         // Lock to the exact Raspberry Pi LCD resolution
-        canvas = new Canvas(480, 480);
+        canvas = new Canvas(DISPLAY_SIZE, DISPLAY_SIZE);
         HBox controlBar = createTouchControlBar();
 
         StackPane root = new StackPane();
@@ -117,16 +135,35 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
 
         root.getChildren().addAll(canvas, controlBar);
         StackPane.setAlignment(controlBar, Pos.TOP_RIGHT);
-        StackPane.setMargin(controlBar, new Insets(58, 12, 0, 0));
+        StackPane.setMargin(controlBar, new Insets(4, 4, 0, 0));
 
-        VBox bootScreen = createBootScreen(root);
-        root.getChildren().add(bootScreen);
+        bootRoot = root;
+        bootOverlay = createBootScreen(root);
+        root.getChildren().add(bootOverlay);
 
         // Lock the Scene to 480x480
-        Scene scene = new Scene(root, 480, 480);
+        Scene scene = new Scene(root, DISPLAY_SIZE, DISPLAY_SIZE);
+        scene.setOnKeyPressed(event -> {
+            if (event.getCode() == KeyCode.EQUALS) {
+                changeRange(1);
+                event.consume();
+            } else if (event.getCode() == KeyCode.MINUS) {
+                changeRange(-1);
+                event.consume();
+            } else if (event.getCode() == KeyCode.R) {
+                currentRangeNM = 10;
+                event.consume();
+            }
+        });
+        scene.setOnMouseClicked(event -> root.requestFocus());
+        scene.setOnKeyReleased(event -> root.requestFocus());
+        root.setFocusTraversable(true);
 
         // Remove standard desktop window borders for embedded hardware deployment
         primaryStage.initStyle(javafx.stage.StageStyle.UNDECORATED);
+        primaryStage.setResizable(false);
+        primaryStage.setWidth(DISPLAY_SIZE);
+        primaryStage.setHeight(DISPLAY_SIZE);
 
         primaryStage.setTitle("Stratux HUD");
         primaryStage.setScene(scene);
@@ -136,11 +173,13 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
             if (stratuxWebSocket != null) {
                 stratuxWebSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Closing");
             }
+            stopEncoderListener();
             Platform.exit();
             System.exit(0);
         });
 
         primaryStage.show();
+        root.requestFocus();
 
         AnimationTimer renderLoop = new AnimationTimer() {
             @Override
@@ -153,12 +192,14 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
         connectToStratux();
         pollSituationData();
         pollNexradData();
+        startEncoderListener();
     }
 
     private VBox createBootScreen(StackPane root) {
         VBox bootOverlay = new VBox(25);
         bootOverlay.setAlignment(Pos.CENTER);
         bootOverlay.setStyle("-fx-background-color: #000000;");
+        bootScreenVisible = true;
 
         // Scaled fonts for 480x480 micro-display
         Label titleLabel = new Label("HarTech Awareness System");
@@ -184,22 +225,32 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
         bootOverlay.getChildren().addAll(titleLabel, dbLabel, warningLabel, countdownLabel, continueBtn);
 
         final int[] secondsLeft = {10};
-        Timeline startupTimer = new Timeline(new KeyFrame(Duration.seconds(1), e -> {
+        bootStartupTimer = new Timeline(new KeyFrame(Duration.seconds(1), e -> {
             secondsLeft[0]--;
             countdownLabel.setText("Automatically starting in " + secondsLeft[0] + "...");
             if (secondsLeft[0] <= 0) {
-                root.getChildren().remove(bootOverlay);
+                finishBootScreen();
             }
         }));
-        startupTimer.setCycleCount(10);
-        startupTimer.play();
+        bootStartupTimer.setCycleCount(10);
+        bootStartupTimer.play();
 
-        continueBtn.setOnAction(e -> {
-            startupTimer.stop();
-            root.getChildren().remove(bootOverlay);
-        });
+        continueBtn.setOnAction(e -> finishBootScreen());
 
         return bootOverlay;
+    }
+
+    private void finishBootScreen() {
+        if (!bootScreenVisible) {
+            return;
+        }
+        bootScreenVisible = false;
+        if (bootStartupTimer != null) {
+            bootStartupTimer.stop();
+        }
+        if (bootRoot != null && bootOverlay != null) {
+            bootRoot.getChildren().remove(bootOverlay);
+        }
     }
 
     private void pollNexradData() {
@@ -273,23 +324,98 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
 
         Button btnZoomIn = createStyledButton("+");
         Button btnZoomOut = createStyledButton("-");
+        String compactStyle = "-fx-background-color: #172b3a; -fx-text-fill: #d8f4ff; "
+                + "-fx-border-color: #4a8da8; -fx-border-width: 1; "
+                + "-fx-font-weight: bold; -fx-font-size: 10px; -fx-padding: 1 4;";
+        btnZoomIn.setStyle(compactStyle);
+        btnZoomOut.setStyle(compactStyle);
 
-        btnZoomIn.setOnAction(e -> {
+        btnZoomIn.setOnAction(e -> changeRange(1));
+        btnZoomOut.setOnAction(e -> changeRange(-1));
+
+        box.getChildren().addAll(btnZoomIn, btnZoomOut);
+        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        box.setVisible(windows);
+        box.setManaged(windows);
+        return box;
+    }
+
+    private void startEncoderListener() {
+        try {
+            encoderSocket = new DatagramSocket(ENCODER_COMMAND_PORT);
+        } catch (SocketException e) {
+            System.err.println("Encoder listener unavailable: " + e.getMessage());
+            return;
+        }
+
+        encoderListenerThread = new Thread(() -> {
+            byte[] buffer = new byte[256];
+            while (!shuttingDown && !encoderSocket.isClosed()) {
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                try {
+                    encoderSocket.receive(packet);
+                    String message = new String(
+                            packet.getData(), packet.getOffset(), packet.getLength(),
+                            StandardCharsets.UTF_8);
+                    handleEncoderCommand(message);
+                } catch (SocketException e) {
+                    if (!shuttingDown) {
+                        System.err.println("Encoder listener stopped: " + e.getMessage());
+                    }
+                    break;
+                } catch (java.io.IOException e) {
+                    if (!shuttingDown) {
+                        System.err.println("Encoder input failed: " + e.getMessage());
+                    }
+                }
+            }
+        }, "encoder-input");
+        encoderListenerThread.setDaemon(true);
+        encoderListenerThread.start();
+    }
+
+    private void handleEncoderCommand(String message) {
+        try {
+            com.google.gson.JsonObject command = JsonParser.parseString(message).getAsJsonObject();
+            String event = command.has("event") ? command.get("event").getAsString() : "";
+            if ("rotate".equals(event) && command.has("delta")) {
+                int delta = command.get("delta").getAsInt();
+                if (delta != 0) {
+                    Platform.runLater(() -> changeRange(delta > 0 ? 1 : -1));
+                }
+            } else if ("press".equals(event)) {
+                Platform.runLater(() -> {
+                    if (bootScreenVisible) {
+                        finishBootScreen();
+                    }
+                });
+            }
+        } catch (com.google.gson.JsonParseException | IllegalStateException | NumberFormatException e) {
+            System.err.println("Invalid encoder command: " + e.getMessage());
+        }
+    }
+
+    private void changeRange(int direction) {
+        if (direction > 0) {
             if (currentRangeNM == 5) currentRangeNM = 10;
             else if (currentRangeNM == 10) currentRangeNM = 25;
             else if (currentRangeNM == 25) currentRangeNM = 50;
             else if (currentRangeNM == 50) currentRangeNM = 100;
-        });
-
-        btnZoomOut.setOnAction(e -> {
+        } else {
             if (currentRangeNM == 100) currentRangeNM = 50;
             else if (currentRangeNM == 50) currentRangeNM = 25;
             else if (currentRangeNM == 25) currentRangeNM = 10;
             else if (currentRangeNM == 10) currentRangeNM = 5;
-        });
+        }
+    }
 
-        box.getChildren().addAll(btnZoomIn, btnZoomOut);
-        return box;
+    private void stopEncoderListener() {
+        if (encoderSocket != null) {
+            encoderSocket.close();
+        }
+        if (encoderListenerThread != null) {
+            encoderListenerThread.interrupt();
+        }
     }
 
     private Button createStyledButton(String text) {
@@ -823,7 +949,7 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
     private void connectToStratux() {
         HttpClient client = HttpClient.newHttpClient();
         client.newWebSocketBuilder()
-                .buildAsync(URI.create("ws://192.168.10.1/traffic"), this)
+                .buildAsync(URI.create("ws://" + STRATUX_HOST + "/traffic"), this)
                 .thenAccept(webSocket -> {
                     this.stratuxWebSocket = webSocket;
                     this.trafficError = "";
@@ -966,7 +1092,7 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
             public void run() {
                 try {
                     HttpRequest request = HttpRequest.newBuilder()
-                            .uri(URI.create("http://192.168.10.1/getSituation"))
+                            .uri(URI.create("http://" + STRATUX_HOST + "/getSituation"))
                             .GET()
                             .build();
 
@@ -995,7 +1121,10 @@ public class StratuxDisplayApplication extends Application implements WebSocket.
                                                     currentLatitude - delta, currentLatitude + delta,
                                                     currentLongitude - delta, currentLongitude + delta
                                             );
-                                            activeRoads = new ArrayList<>();
+                                            activeRoads = dbManager.getNearbyRoads(
+                                                    currentLatitude - delta, currentLatitude + delta,
+                                                    currentLongitude - delta, currentLongitude + delta
+                                            );
                                             activeWater = dbManager.getNearbyWater(
                                                     currentLatitude - delta, currentLatitude + delta,
                                                     currentLongitude - delta, currentLongitude + delta

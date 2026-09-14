@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.example</groupId>
     <artifactId>stratux-display</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.2-SNAPSHOT</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -38,14 +38,33 @@
             <artifactId>slf4j-simple</artifactId>
             <version>2.0.9</version>
         </dependency>
-        <!-- Force inclusion of Raspberry Pi 64-bit Native Graphics -->
-        <dependency>
-            <groupId>org.openjfx</groupId>
-            <artifactId>javafx-graphics</artifactId>
-            <version>23.0.1</version> <!-- MATCH YOUR EXISTING JAVAFX VERSION HERE -->
-            <classifier>linux-aarch64</classifier>
-        </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>raspberry-pi-aarch64</id>
+            <activation>
+                <property>
+                    <name>pi-aarch64</name>
+                </property>
+            </activation>
+            <dependencies>
+                <!-- Raspberry Pi 3B+ running a 64-bit Raspberry Pi OS. -->
+                <dependency>
+                    <groupId>org.openjfx</groupId>
+                    <artifactId>javafx-controls</artifactId>
+                    <version>17.0.2</version> <!-- Match your current version -->
+                    <classifier>linux-aarch64</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.openjfx</groupId>
+                    <artifactId>javafx-graphics</artifactId>
+                    <version>17.0.2</version>
+                    <classifier>linux-aarch64</classifier>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 
     <build>
         <plugins>
